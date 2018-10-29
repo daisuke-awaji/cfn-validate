@@ -67,48 +67,50 @@ Resources:
       Roles:
         - !Ref VPCFlowLogsRole
 
-  VPCEndpointSSM:
-    Type: AWS::EC2::VPCEndpoint
-    Properties:
-      VpcId: !Ref VPC
-      # Systems Manager サービスのエンドポイント。
-      ServiceName: !Sub com.amazonaws.${AWS::Region}.ssm
-      VpcEndpointType: Interface
-      PrivateDnsEnabled: false
-      SubnetIds:
-        - !Ref PublicSubnet1
+  # NATGateway経由でインターネットに抜ければいいのでべつにPrivateLinkしなくても良くないかな？
 
-  VPCEndpointSSMMessages:
-    Type: AWS::EC2::VPCEndpoint
-    Properties:
-      VpcId: !Ref VPC
-      # This endpoint is required only if you are connecting to your instances through a secure data channel using Session Manager. For more information, see AWS Systems Manager Session Manager.
-      ServiceName: !Sub com.amazonaws.${AWS::Region}.ssmmessages
-      VpcEndpointType: Interface
-      PrivateDnsEnabled: false
-      SubnetIds:
-        - !Ref PublicSubnet1
-
-  VPCEndpointEC2Messages:
-    Type: AWS::EC2::VPCEndpoint
-    Properties:
-      VpcId: !Ref VPC
-      # このエンドポイントを通じて、Systems Manager は SSM エージェントから Systems Manager サービスへの呼び出しを行います
-      ServiceName: !Sub com.amazonaws.${AWS::Region}.ec2messages
-      VpcEndpointType: Interface
-      PrivateDnsEnabled: false
-      SubnetIds:
-        - !Ref PublicSubnet1
-
-  VPCEndpointS3:
-    Type: AWS::EC2::VPCEndpoint
-    Properties:
-      VpcId: !Ref VPC
-      # Systems Manager は Amazon S3 出力ログをアップロードし、SSM エージェントを更新します。
-      ServiceName: !Sub com.amazonaws.${AWS::Region}.s3
-      # Subnet IDs are only supported for Interface type VPC Endpoint
-      VpcEndpointType: Gateway
-      PrivateDnsEnabled: false
+  # VPCEndpointSSM:
+  #   Type: AWS::EC2::VPCEndpoint
+  #   Properties:
+  #     VpcId: !Ref VPC
+  #     # Systems Manager サービスのエンドポイント。
+  #     ServiceName: !Sub com.amazonaws.${AWS::Region}.ssm
+  #     VpcEndpointType: Interface
+  #     PrivateDnsEnabled: false
+  #     SubnetIds:
+  #       - !Ref PublicSubnet1
+  #
+  # VPCEndpointSSMMessages:
+  #   Type: AWS::EC2::VPCEndpoint
+  #   Properties:
+  #     VpcId: !Ref VPC
+  #     # This endpoint is required only if you are connecting to your instances through a secure data channel using Session Manager. For more information, see AWS Systems Manager Session Manager.
+  #     ServiceName: !Sub com.amazonaws.${AWS::Region}.ssmmessages
+  #     VpcEndpointType: Interface
+  #     PrivateDnsEnabled: false
+  #     SubnetIds:
+  #       - !Ref PublicSubnet1
+  #
+  # VPCEndpointEC2Messages:
+  #   Type: AWS::EC2::VPCEndpoint
+  #   Properties:
+  #     VpcId: !Ref VPC
+  #     # このエンドポイントを通じて、Systems Manager は SSM エージェントから Systems Manager サービスへの呼び出しを行います
+  #     ServiceName: !Sub com.amazonaws.${AWS::Region}.ec2messages
+  #     VpcEndpointType: Interface
+  #     PrivateDnsEnabled: false
+  #     SubnetIds:
+  #       - !Ref PublicSubnet1
+  #
+  # VPCEndpointS3:
+  #   Type: AWS::EC2::VPCEndpoint
+  #   Properties:
+  #     VpcId: !Ref VPC
+  #     # Systems Manager は Amazon S3 出力ログをアップロードし、SSM エージェントを更新します。
+  #     ServiceName: !Sub com.amazonaws.${AWS::Region}.s3
+  #     # Subnet IDs are only supported for Interface type VPC Endpoint
+  #     VpcEndpointType: Gateway
+  #     PrivateDnsEnabled: false
 
   #  ___ _   _ _____ _____ ____  _   _ _____ _____
   # |_ _| \ | |_   _| ____|  _ \| \ | | ____|_   _|
@@ -208,6 +210,45 @@ Resources:
       SubnetId: !Ref PublicSubnet1
       NetworkAclId: !Ref PublicNetworkAcl1
 
+  # PrivateSubnet1に付与するネットワークACL
+  # サブネット単位でネットワーク制御をしたい場合はこちらを編集してください。
+  PrivateNetworkAcl1:
+    Type: "AWS::EC2::NetworkAcl"
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: ci-az1-private-subnet-network-acl
+  InboundHTTPPrivateNetworkAcl1Entry:
+    Type: "AWS::EC2::NetworkAclEntry"
+    Properties:
+      NetworkAclId: !Ref PrivateNetworkAcl1
+      RuleNumber: "100"
+      Protocol: "-1"
+      RuleAction: "allow"
+      Egress: "false"
+      CidrBlock: "0.0.0.0/0"
+      PortRange:
+        From: "0"
+        To: "65535"
+  OutboundPrivateNetworkAcl1Entry:
+    Type: "AWS::EC2::NetworkAclEntry"
+    Properties:
+      NetworkAclId: !Ref PrivateNetworkAcl1
+      RuleNumber: "100"
+      Protocol: "-1"
+      RuleAction: "allow"
+      Egress: "true"
+      CidrBlock: "0.0.0.0/0"
+      PortRange:
+        From: "0"
+        To: "65535"
+  PrivateSubnet1NetworkAclAssociation:
+    Type: "AWS::EC2::SubnetNetworkAclAssociation"
+    Properties:
+      SubnetId: !Ref PrivateSubnet1
+      NetworkAclId: !Ref PrivateNetworkAcl1
+
   #  _   _    _  _____    ____    _  _____ _______        ___ __   __
   # | \ | |  / \|_   _|  / ___|  / \|_   _| ____\ \      / / \\ \ / /
   # |  \| | / _ \ | |   | |  _  / _ \ | | |  _|  \ \ /\ / / _ \\ V /
@@ -294,10 +335,10 @@ Resources:
       VpcId: !Ref VPC
       SecurityGroupIngress:
         - IpProtocol: "TCP"
-          FromPort: 22
-          ToPort: 22
-          CidrIp: 127.0.0.1/32
-          Description: "localhost"
+          FromPort: 8080
+          ToPort: 8080
+          CidrIp: 126.224.73.119/32
+          Description: "myip"
       Tags:
         - Key: Name
           Value: ci-public-security-group
@@ -438,33 +479,40 @@ Resources:
       ImageId: ami-0922553b7b0369273
       InstanceType: t2.micro
       NetworkInterfaces:
-          # ネットワークインターフェイスがパブリック IP アドレスを受信するかどうかを示します
-        - AssociatePublicIpAddress: 'false'
+        # ALBとか挟むならプライベートサブネットに置いてもいいけどどうかな？
+        #   # ネットワークインターフェイスがパブリック IP アドレスを受信するかどうかを示します
+        # - AssociatePublicIpAddress: 'false'
+        #   # アタッチの順番におけるネットワークインターフェイスの位置
+        #   DeviceIndex: '0'
+        #   # このネットワークインターフェイスに関連付けられているセキュリティグループ ID のリスト
+        #   GroupSet:
+        #     - !Ref PrivateSecurityGroup
+        #   # ネットワークインターフェイスに関連付けるサブネットの ID
+        #   SubnetId: !Ref PrivateSubnet1
+        #   # ネットワークインターフェイスがパブリック IP アドレスを受信するかどうかを示します
+        - AssociatePublicIpAddress: 'true'
           # アタッチの順番におけるネットワークインターフェイスの位置
           DeviceIndex: '0'
           # このネットワークインターフェイスに関連付けられているセキュリティグループ ID のリスト
           GroupSet:
-            - !Ref PrivateSecurityGroup
+            - !Ref PublicSecurityGroup
           # ネットワークインターフェイスに関連付けるサブネットの ID
-          SubnetId: !Ref PrivateSubnet1
+          SubnetId: !Ref PublicSubnet1
       UserData:
         "Fn::Base64":
           !Sub |
             #!/bin/bash
             cd /tmp
+            yum -y update
+            # Install amazon-ssm-agent
             sudo yum install -y https://s3.amazonaws.com/ec2-downloads-windows/SSMAgent/latest/linux_amd64/amazon-ssm-agent.rpm
             sudo systemctl start amazon-ssm-agent
-
-
-Outputs:
-  PublicSubnet1:
-    Description: public subnet
-    Value: !Ref PublicSubnet1
-
-  PublicSecurityGroup:
-    Description: public security group
-    Value: !Ref PublicSecurityGroup
-
-  SSMRoleInstanceProfile:
-    Description: ssm instance profile
-    Value: !GetAtt SSMRoleInstanceProfile.Arn
+            # Install Jenkins
+            sudo yum install -y java-1.8.0-openjdk-devel
+            sudo alternatives --config java
+            sudo wget -O /etc/yum.repos.d/jenkins.repo http://pkg.jenkins-ci.org/redhat/jenkins.repo
+            sudo rpm --import https://jenkins-ci.org/redhat/jenkins-ci.org.key
+            sudo yum -y install jenkins
+            sudo service jenkins start
+            # EC2がブートするたびにJenkinsが起動するように
+            sudo chkconfig jenkins on
