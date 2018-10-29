@@ -1,0 +1,685 @@
+---
+AWSTemplateFormatVersion: "2010-09-09"
+Description: CCUS-LINK
+
+Parameters:
+  Env:
+    Description: An environment name that will be prefixed to resource names
+    Type: String
+    AllowedValues:
+      - d8
+      - t2
+      - p2
+
+Conditions:
+  CreateProdResources: !Equals [ !Ref Env, p2 ]
+
+Resources:
+
+  # See. https://github.com/cmatsuoka/figlet
+  #  _   _ _____ _______        _____  ____  _  __
+  # | \ | | ____|_   _\ \      / / _ \|  _ \| |/ /
+  # |  \| |  _|   | |  \ \ /\ / / | | | |_) | ' /
+  # | |\  | |___  | |   \ V  V /| |_| |  _ <| . \
+  # |_| \_|_____| |_|    \_/\_/  \___/|_| \_\_|\_\
+
+  # VPCを作成するとデフォルトでセキュリティグループ、ネットワークACL、
+  # ルートテーブルができますが、名前の指定を含む、各種設定をすることができません。
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.192.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: !Sub ${Env}-vpc
+
+  VPCFlowLogs:
+    Type: "AWS::EC2::FlowLog"
+    Properties:
+      LogGroupName: !Sub "${Env}-ccus-link-vpcflowlogs"
+      DeliverLogsPermissionArn: !GetAtt VPCFlowLogsRole.Arn
+      ResourceId: !Ref VPC
+      ResourceType: "VPC"
+      TrafficType: ALL # ALL | ACCEPT | REJECT から選択
+
+  # VPCFlowlogsがCloudwatch Logにログを書き込むためのロール
+  VPCFlowLogsRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${Env}-vpc-flow-logs-role"
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: "Allow"
+            Principal:
+              Service:
+                - "ec2.amazonaws.com"
+            Action:
+              - "sts:AssumeRole"
+      Path: "/"
+  VPCFlowLogsPolicy:
+    Type: 'AWS::IAM::ManagedPolicy'
+    Properties:
+      Path: "/"
+      Description: !Sub "VPCFlowLogsPolicy"
+      ManagedPolicyName: !Sub "${Env}-vpc-flow-logs-policy"
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Action:
+              - "logs:CreateLogGroup"
+              - "logs:CreateLogStream"
+              - "logs:DescribeLogGroups"
+              - "logs:DescribeLogStreams"
+              - "logs:PutLogEvents"
+            Resource:
+              - "*"
+      Roles:
+        - !Ref VPCFlowLogsRole
+
+  #  ___ _   _ _____ _____ ____  _   _ _____ _____
+  # |_ _| \ | |_   _| ____|  _ \| \ | | ____|_   _|
+  #  | ||  \| | | | |  _| | |_) |  \| |  _|   | |
+  #  | || |\  | | | | |___|  _ <| |\  | |___  | |
+  # |___|_| \_| |_| |_____|_| \_\_| \_|_____| |_|
+  #
+  #   ____    _  _____ _______        ___ __   __
+  #  / ___|  / \|_   _| ____\ \      / / \\ \ / /
+  # | |  _  / _ \ | | |  _|  \ \ /\ / / _ \\ V /
+  # | |_| |/ ___ \| | | |___  \ V  V / ___ \| |
+  #  \____/_/   \_\_| |_____|  \_/\_/_/   \_\_|
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Sub ${Env}-igw
+
+  InternetGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      InternetGatewayId: !Ref InternetGateway
+      VpcId: !Ref VPC
+
+  #  ____  _   _ ____  _   _ _____ _____
+  # / ___|| | | | __ )| \ | | ____|_   _|
+  # \___ \| | | |  _ \|  \| |  _|   | |
+  #  ___) | |_| | |_) | |\  | |___  | |
+  # |____/ \___/|____/|_| \_|_____| |_|
+
+  PublicSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select [ 0, !GetAZs '' ]
+      CidrBlock: 10.192.10.0/24
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub ${Env}-az1-public-subnet
+
+  PublicSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select [ 1, !GetAZs '' ]
+      CidrBlock: 10.192.11.0/24
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub ${Env}-az2-public-subnet
+
+  PrivateSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select [ 0, !GetAZs '' ]
+      CidrBlock: 10.192.30.0/24
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub ${Env}-az1-private-subnet
+
+  PrivateSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select [ 1, !GetAZs '' ]
+      CidrBlock: 10.192.31.0/24
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub ${Env}-az2-private-subnet
+
+  #  _   _ _____ _______        _____  ____  _  __     _    ____ _
+  # | \ | | ____|_   _\ \      / / _ \|  _ \| |/ /    / \  / ___| |
+  # |  \| |  _|   | |  \ \ /\ / / | | | |_) | ' /    / _ \| |   | |
+  # | |\  | |___  | |   \ V  V /| |_| |  _ <| . \   / ___ \ |___| |___
+  # |_| \_|_____| |_|    \_/\_/  \___/|_| \_\_|\_\ /_/   \_\____|_____|
+
+  # PublicSubnet1に付与するネットワークACL
+  # サブネット単位でネットワーク制御をしたい場合はこちらを編集してください。
+  PublicNetworkAcl1:
+    Type: "AWS::EC2::NetworkAcl"
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub ${Env}-az1-public-subnet-network-acl
+  InboundHTTPPublicNetworkAcl1Entry:
+    Type: "AWS::EC2::NetworkAclEntry"
+    Properties:
+      NetworkAclId: !Ref PublicNetworkAcl1
+      RuleNumber: "100"
+      Protocol: "-1"
+      RuleAction: "allow"
+      Egress: "false"
+      CidrBlock: "0.0.0.0/0"
+      PortRange:
+        From: "0"
+        To: "65535"
+  OutboundPublicNetworkAcl1Entry:
+    Type: "AWS::EC2::NetworkAclEntry"
+    Properties:
+      NetworkAclId: !Ref PublicNetworkAcl1
+      RuleNumber: "100"
+      Protocol: "-1"
+      RuleAction: "allow"
+      Egress: "true"
+      CidrBlock: "0.0.0.0/0"
+      PortRange:
+        From: "0"
+        To: "65535"
+  PublicSubnet1NetworkAclAssociation:
+    Type: "AWS::EC2::SubnetNetworkAclAssociation"
+    Properties:
+      SubnetId: !Ref PublicSubnet1
+      NetworkAclId: !Ref PublicNetworkAcl1
+
+  # PublicSubnet2に付与するネットワークACL
+  # サブネット単位でネットワーク制御をしたい場合はこちらを編集してください。
+  PublicNetworkAcl2:
+    Type: "AWS::EC2::NetworkAcl"
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub ${Env}-az2-public-subnet-network-acl
+  InboundHTTPPublicNetworkAcl2Entry:
+    Type: "AWS::EC2::NetworkAclEntry"
+    Properties:
+      NetworkAclId: !Ref PublicNetworkAcl2
+      RuleNumber: "100"
+      Protocol: "-1"
+      RuleAction: "allow"
+      Egress: "false"
+      CidrBlock: "0.0.0.0/0"
+      PortRange:
+        From: "0"
+        To: "65535"
+  OutboundPublicNetworkAcl2Entry:
+    Type: "AWS::EC2::NetworkAclEntry"
+    Properties:
+      NetworkAclId: !Ref PublicNetworkAcl2
+      RuleNumber: "100"
+      Protocol: "-1"
+      RuleAction: "allow"
+      Egress: "true"
+      CidrBlock: "0.0.0.0/0"
+      PortRange:
+        From: "0"
+        To: "65535"
+  PublicSubnet2NetworkAclAssociation:
+    Type: "AWS::EC2::SubnetNetworkAclAssociation"
+    Properties:
+      SubnetId: !Ref PublicSubnet2
+      NetworkAclId: !Ref PublicNetworkAcl2
+
+  # PrivateSubnet1に付与するネットワークACL
+  # サブネット単位でネットワーク制御をしたい場合はこちらを編集してください。
+  PrivateNetworkAcl1:
+    Type: "AWS::EC2::NetworkAcl"
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub ${Env}-az1-private-subnet-network-acl
+  InboundHTTPPrivateNetworkAcl1Entry:
+    Type: "AWS::EC2::NetworkAclEntry"
+    Properties:
+      NetworkAclId: !Ref PrivateNetworkAcl1
+      RuleNumber: "100"
+      Protocol: "-1"
+      RuleAction: "allow"
+      Egress: "false"
+      CidrBlock: "0.0.0.0/0"
+      PortRange:
+        From: "0"
+        To: "65535"
+  OutboundPrivateNetworkAcl1Entry:
+    Type: "AWS::EC2::NetworkAclEntry"
+    Properties:
+      NetworkAclId: !Ref PrivateNetworkAcl1
+      RuleNumber: "100"
+      Protocol: "-1"
+      RuleAction: "allow"
+      Egress: "true"
+      CidrBlock: "0.0.0.0/0"
+      PortRange:
+        From: "0"
+        To: "65535"
+  PrivateSubnet1NetworkAclAssociation:
+    Type: "AWS::EC2::SubnetNetworkAclAssociation"
+    Properties:
+      SubnetId: !Ref PrivateSubnet1
+      NetworkAclId: !Ref PrivateNetworkAcl1
+
+  # PrivateSubnet2に付与するネットワークACL
+  # サブネット単位でネットワーク制御をしたい場合はこちらを編集してください。
+  PrivateNetworkAcl2:
+    Type: "AWS::EC2::NetworkAcl"
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub ${Env}-az2-private-subnet-network-acl
+  InboundHTTPPrivateNetworkAcl2Entry:
+    Type: "AWS::EC2::NetworkAclEntry"
+    Properties:
+      NetworkAclId: !Ref PrivateNetworkAcl2
+      RuleNumber: "100"
+      Protocol: "-1"
+      RuleAction: "allow"
+      Egress: "false"
+      CidrBlock: "0.0.0.0/0"
+      PortRange:
+        From: "0"
+        To: "65535"
+  OutboundPrivateNetworkAcl2Entry:
+    Type: "AWS::EC2::NetworkAclEntry"
+    Properties:
+      NetworkAclId: !Ref PrivateNetworkAcl2
+      RuleNumber: "100"
+      Protocol: "-1"
+      RuleAction: "allow"
+      Egress: "true"
+      CidrBlock: "0.0.0.0/0"
+      PortRange:
+        From: "0"
+        To: "65535"
+  PrivateSubnet2NetworkAclAssociation:
+    Type: "AWS::EC2::SubnetNetworkAclAssociation"
+    Properties:
+      SubnetId: !Ref PrivateSubnet2
+      NetworkAclId: !Ref PrivateNetworkAcl2
+
+  #  _   _    _  _____    ____    _  _____ _______        ___ __   __
+  # | \ | |  / \|_   _|  / ___|  / \|_   _| ____\ \      / / \\ \ / /
+  # |  \| | / _ \ | |   | |  _  / _ \ | | |  _|  \ \ /\ / / _ \\ V /
+  # | |\  |/ ___ \| |   | |_| |/ ___ \| | | |___  \ V  V / ___ \| |
+  # |_| \_/_/   \_\_|    \____/_/   \_\_| |_____|  \_/\_/_/   \_\_|
+
+  NatGateway1EIP:
+    Type: AWS::EC2::EIP
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      Domain: vpc
+
+  NatGateway2EIP:
+    Type: AWS::EC2::EIP
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      Domain: vpc
+
+  NatGateway1:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NatGateway1EIP.AllocationId
+      SubnetId: !Ref PublicSubnet1
+      Tags:
+        - Key: Name
+          Value: !Sub ${Env}-az1-natgw
+        - Key: Environment
+          Value: !Ref Env
+
+  NatGateway2:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NatGateway2EIP.AllocationId
+      SubnetId: !Ref PublicSubnet2
+      Tags:
+        - Key: Name
+          Value: !Sub ${Env}-az2-natgw
+        - Key: Environment
+          Value: !Ref Env
+
+  #  ____   ___  _   _ _____ _____   _____  _    ____  _     _____
+  # |  _ \ / _ \| | | |_   _| ____| |_   _|/ \  | __ )| |   | ____|
+  # | |_) | | | | | | | | | |  _|     | | / _ \ |  _ \| |   |  _|
+  # |  _ <| |_| | |_| | | | | |___    | |/ ___ \| |_) | |___| |___
+  # |_| \_\\___/ \___/  |_| |_____|   |_/_/   \_\____/|_____|_____|
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub ${Env}-public-route-table
+
+  DefaultPublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      SubnetId: !Ref PublicSubnet1
+
+  PublicSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      SubnetId: !Ref PublicSubnet2
+
+  PrivateRouteTable1:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub ${Env}-az1-private-route-table
+
+  DefaultPrivateRoute1:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable1
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway1
+
+  PrivateSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable1
+      SubnetId: !Ref PrivateSubnet1
+
+  # 万が一グリーンサイトとVPCピアリングする必要が出た場合
+  # 10.144.0.0/16のCIDRでVPCピアリングを設定する。
+  # VPCPeerRoutePrivate1:
+  #   Type: 'AWS::EC2::Route'
+  #   Properties:
+  #     RouteTableId: !Ref PrivateRouteTable1
+  #     DestinationCidrBlock: 10.144.0.0/16
+  #     VpcPeeringConnectionId: !Ref VpcPeeringConnectionId
+
+  PrivateRouteTable2:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub ${Env}-az2-private-route-table
+
+  DefaultPrivateRoute2:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable2
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway2
+
+  PrivateSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable2
+      SubnetId: !Ref PrivateSubnet2
+
+  #  ____  _____ ____ _   _ ____  ___ _______   __   ____ ____   ___  _   _ ____
+  # / ___|| ____/ ___| | | |  _ \|_ _|_   _\ \ / /  / ___|  _ \ / _ \| | | |  _ \
+  # \___ \|  _|| |   | | | | |_) || |  | |  \ V /  | |  _| |_) | | | | | | | |_) |
+  #  ___) | |__| |___| |_| |  _ < | |  | |   | |   | |_| |  _ <| |_| | |_| |  __/
+  # |____/|_____\____|\___/|_| \_\___| |_|   |_|    \____|_| \_\\___/ \___/|_|
+
+  PublicSecurityGroup:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupDescription: !Sub ${Env}-public-security-group
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: "TCP"
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 127.0.0.1/32
+          Description: "localhost"
+      Tags:
+        - Key: Name
+          Value: !Sub ${Env}-public-security-group
+
+  PrivateSecurityGroup:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupDescription: !Sub ${Env}-private-security-group
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: -1
+          FromPort: -1
+          ToPort: -1
+          SourceSecurityGroupId: !Ref PublicSecurityGroup
+          Description: "PublicSecurityGroupToPrivateSecurityGroup"
+      Tags:
+        - Key: Name
+          Value: !Sub ${Env}-private-security-group
+  PrivateSecurityGroupIngress:
+    DependsOn: PrivateSecurityGroup
+    Type: 'AWS::EC2::SecurityGroupIngress'
+    Properties:
+      # Private間はすべての通信を許可
+      GroupId: !Ref PrivateSecurityGroup
+      IpProtocol: -1
+      FromPort: -1
+      ToPort: -1
+      SourceSecurityGroupId: !Ref PrivateSecurityGroup
+
+  #     ___        ______    ____    _  _____ ____ _   _
+  #    / \ \      / / ___|  | __ )  / \|_   _/ ___| | | |
+  #   / _ \ \ /\ / /\___ \  |  _ \ / _ \ | || |   | |_| |
+  #  / ___ \ V  V /  ___) | | |_) / ___ \| || |___|  _  |
+  # /_/   \_\_/\_/  |____/  |____/_/   \_\_| \____|_| |_|
+
+  SpotComputeEnvironment:
+    Type: AWS::Batch::ComputeEnvironment
+    Properties:
+      Type: MANAGED
+      ServiceRole: !GetAtt AWSBatchServiceRole.Arn
+      State: ENABLED
+      ComputeResources:
+        SpotIamFleetRole: !GetAtt SpotFleetRole.Arn
+        MinvCpus: 0
+        MaxvCpus: 50
+        BidPercentage: 40
+        SecurityGroupIds:
+          - !Ref PrivateSecurityGroup
+        Subnets:
+          - !Ref PrivateSubnet1
+          - !Ref PrivateSubnet2
+        Type: SPOT
+        InstanceRole: !GetAtt AWSBatchInstanceProfile.Arn
+        InstanceTypes:
+          - c4.large
+        ImageId: ami-0b9a214f40c38d5eb
+        Tags:
+          Environment: !Ref Env
+          Group: ccus-link-batch
+          Name: !Sub ${Env}-ccus-link-batch-ec2-spot
+          Service: ccus-link
+          Owner: int-infra
+          Role: batch
+          Datadog: enable
+
+  # ジョブキュー
+  JobQueue:
+    Type: "AWS::Batch::JobQueue"
+    Properties:
+      JobQueueName: !Sub ${Env}-ccus-link-batch-job-queue
+      ComputeEnvironmentOrder:
+        - Order: 1
+          ComputeEnvironment: !Ref SpotComputeEnvironment
+      Priority: 10
+      State: ENABLED
+
+  #  ___    _    __  __   ____   ___  _     _____
+  # |_ _|  / \  |  \/  | |  _ \ / _ \| |   | ____|
+  #  | |  / _ \ | |\/| | | |_) | | | | |   |  _|
+  #  | | / ___ \| |  | | |  _ <| |_| | |___| |___
+  # |___/_/   \_\_|  |_| |_| \_\\___/|_____|_____|
+
+  # AWS Batchのサービスロール
+  AWSBatchServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${Env}-aws-batch-service-role"
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - batch.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSBatchServiceRole
+      Path: "/service-role/"
+
+  # AWS BatchがスポットインスタンスとしてEC2を起動するためのロール
+  SpotFleetRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      RoleName: !Sub "${Env}-spot-fleet-role"
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: "Allow"
+            Principal:
+              Service:
+                - "ec2.amazonaws.com"
+            Action:
+              - "sts:AssumeRole"
+      Path: "/"
+  SpotFleetPolicy:
+    Type: 'AWS::IAM::ManagedPolicy'
+    Properties:
+      Path: "/"
+      Description: !Sub "AmazonECSPolicy"
+      ManagedPolicyName: !Sub "${Env}-spot-fleet-policy"
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Action:
+                - "ec2:DescribeImages"
+                - "ec2:DescribeSubnets"
+                - "ec2:RequestSpotInstances"
+                - "ec2:TerminateInstances"
+                - "ec2:DescribeInstanceStatus"
+                - "iam:PassRole"
+                - "elasticloadbalancing:RegisterTargets"
+            Resource:
+              - "*"
+          - Effect: "Allow"
+            Action:
+                - "elasticloadbalancing:RegisterInstancesWithLoadBalancer"
+            Resource:
+              - "arn:aws:elasticloadbalancing:*:*:loadbalancer/*"
+      Roles:
+        - !Ref SpotFleetRole
+
+  # AWS Batchのコンピューティング環境が起動するEC2インスタンスに付与するインスタンスロール
+  AWSBatchInstanceProfile:
+    Type: 'AWS::IAM::InstanceProfile'
+    Properties:
+      InstanceProfileName: !Sub "${Env}-ccus-link-aws-batch-instace-profile"
+      Path: "/"
+      Roles:
+        - !Ref AWSBatchInstanceRole
+  AWSBatchInstanceRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      RoleName: !Sub "${Env}-ccus-link-aws-batch-instace-role"
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: "Allow"
+            Principal:
+              Service:
+                - "ec2.amazonaws.com"
+            Action:
+              - "sts:AssumeRole"
+      Path: "/"
+  # AmazonECSを使用するポリシー
+  AmazonECSPolicy:
+    Type: 'AWS::IAM::ManagedPolicy'
+    Properties:
+      Path: "/"
+      Description: !Sub "AmazonECSPolicy"
+      ManagedPolicyName: !Sub "${Env}-amazon-ecs-policy"
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Action:
+              - "ecs:CreateCluster"
+              - "ecs:DeregisterContainerInstance"
+              - "ecs:DiscoverPollEndpoint"
+              - "ecs:Poll"
+              - "ecs:RegisterContainerInstance"
+              - "ecs:StartTelemetrySession"
+              - "ecs:UpdateContainerInstancesState"
+              - "ecs:Submit*"
+              - "ecr:GetAuthorizationToken"
+              - "ecr:BatchCheckLayerAvailability"
+              - "ecr:GetDownloadUrlForLayer"
+              - "ecr:BatchGetImage"
+              - "logs:CreateLogStream"
+              - "logs:PutLogEvents"
+            Resource:
+              - "*"
+      Roles:
+        - !Ref AWSBatchInstanceRole
+
+Outputs:
+  VPC:
+    Description: A reference to the created VPC
+    Value: !Ref VPC
+
+  PublicSubnets:
+    Description: A list of the public subnets
+    Value: !Join [ ",", [ !Ref PublicSubnet1, !Ref PublicSubnet2 ]]
+
+  PrivateSubnets:
+    Description: A list of the private subnets
+    Value: !Join [ ",", [ !Ref PrivateSubnet1, !Ref PrivateSubnet2 ]]
+
+  PublicSubnet1:
+    Description: A reference to the public subnet in the 1st Availability Zone
+    Value: !Ref PublicSubnet1
+
+  PublicSubnet2:
+    Description: A reference to the public subnet in the 2nd Availability Zone
+    Value: !Ref PublicSubnet2
+
+  PrivateSubnet1:
+    Description: A reference to the private subnet in the 1st Availability Zone
+    Value: !Ref PrivateSubnet1
+
+  PrivateSubnet2:
+    Description: A reference to the private subnet in the 2nd Availability Zone
+    Value: !Ref PrivateSubnet2

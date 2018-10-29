@@ -1,0 +1,5 @@
+[
+  "tests/test.py::test_default",
+  "tests/test.py::test_security_groups",
+  "tests/test.py::test_iam_policy_statement"
+]

@@ -1,0 +1,470 @@
+---
+AWSTemplateFormatVersion: "2010-09-09"
+Description: CCUS-LINK
+Resources:
+
+  # See. https://github.com/cmatsuoka/figlet
+  #  _   _ _____ _______        _____  ____  _  __
+  # | \ | | ____|_   _\ \      / / _ \|  _ \| |/ /
+  # |  \| |  _|   | |  \ \ /\ / / | | | |_) | ' /
+  # | |\  | |___  | |   \ V  V /| |_| |  _ <| . \
+  # |_| \_|_____| |_|    \_/\_/  \___/|_| \_\_|\_\
+
+  # VPCを作成するとデフォルトでセキュリティグループ、ネットワークACL、
+  # ルートテーブルができますが、名前の指定を含む、各種設定をすることができません。
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.192.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: ci-vpc
+
+  VPCFlowLogs:
+    Type: "AWS::EC2::FlowLog"
+    Properties:
+      LogGroupName: "ci-ccus-link-vpcflowlogs"
+      DeliverLogsPermissionArn: !GetAtt VPCFlowLogsRole.Arn
+      ResourceId: !Ref VPC
+      ResourceType: "VPC"
+      TrafficType: ALL # ALL | ACCEPT | REJECT から選択
+
+  # VPCFlowlogsがCloudwatch Logにログを書き込むためのロール
+  VPCFlowLogsRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: "ci-vpc-flow-logs-role"
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: "Allow"
+            Principal:
+              Service:
+                - "ec2.amazonaws.com"
+            Action:
+              - "sts:AssumeRole"
+      Path: "/"
+  VPCFlowLogsPolicy:
+    Type: 'AWS::IAM::ManagedPolicy'
+    Properties:
+      Path: "/"
+      Description: "VPCFlowLogsPolicy"
+      ManagedPolicyName: "ci-vpc-flow-logs-policy"
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Action:
+              - "logs:CreateLogGroup"
+              - "logs:CreateLogStream"
+              - "logs:DescribeLogGroups"
+              - "logs:DescribeLogStreams"
+              - "logs:PutLogEvents"
+            Resource:
+              - "*"
+      Roles:
+        - !Ref VPCFlowLogsRole
+
+  VPCEndpointSSM:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref VPC
+      # Systems Manager サービスのエンドポイント。
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.ssm
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: false
+      SubnetIds:
+        - !Ref PublicSubnet1
+
+  VPCEndpointSSMMessages:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref VPC
+      # This endpoint is required only if you are connecting to your instances through a secure data channel using Session Manager. For more information, see AWS Systems Manager Session Manager.
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.ssmmessages
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: false
+      SubnetIds:
+        - !Ref PublicSubnet1
+
+  VPCEndpointEC2Messages:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref VPC
+      # このエンドポイントを通じて、Systems Manager は SSM エージェントから Systems Manager サービスへの呼び出しを行います
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.ec2messages
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: false
+      SubnetIds:
+        - !Ref PublicSubnet1
+
+  VPCEndpointS3:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref VPC
+      # Systems Manager は Amazon S3 出力ログをアップロードし、SSM エージェントを更新します。
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.s3
+      # Subnet IDs are only supported for Interface type VPC Endpoint
+      VpcEndpointType: Gateway
+      PrivateDnsEnabled: false
+
+  #  ___ _   _ _____ _____ ____  _   _ _____ _____
+  # |_ _| \ | |_   _| ____|  _ \| \ | | ____|_   _|
+  #  | ||  \| | | | |  _| | |_) |  \| |  _|   | |
+  #  | || |\  | | | | |___|  _ <| |\  | |___  | |
+  # |___|_| \_| |_| |_____|_| \_\_| \_|_____| |_|
+  #
+  #   ____    _  _____ _______        ___ __   __
+  #  / ___|  / \|_   _| ____\ \      / / \\ \ / /
+  # | |  _  / _ \ | | |  _|  \ \ /\ / / _ \\ V /
+  # | |_| |/ ___ \| | | |___  \ V  V / ___ \| |
+  #  \____/_/   \_\_| |_____|  \_/\_/_/   \_\_|
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: ci-igw
+
+  InternetGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      InternetGatewayId: !Ref InternetGateway
+      VpcId: !Ref VPC
+
+  #  ____  _   _ ____  _   _ _____ _____
+  # / ___|| | | | __ )| \ | | ____|_   _|
+  # \___ \| | | |  _ \|  \| |  _|   | |
+  #  ___) | |_| | |_) | |\  | |___  | |
+  # |____/ \___/|____/|_| \_|_____| |_|
+
+  PublicSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select [ 0, !GetAZs '' ]
+      CidrBlock: 10.192.10.0/24
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: ci-az1-public-subnet
+
+  PrivateSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !Select [ 0, !GetAZs '' ]
+      CidrBlock: 10.192.30.0/24
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: ci-az1-private-subnet
+
+  #  _   _ _____ _______        _____  ____  _  __     _    ____ _
+  # | \ | | ____|_   _\ \      / / _ \|  _ \| |/ /    / \  / ___| |
+  # |  \| |  _|   | |  \ \ /\ / / | | | |_) | ' /    / _ \| |   | |
+  # | |\  | |___  | |   \ V  V /| |_| |  _ <| . \   / ___ \ |___| |___
+  # |_| \_|_____| |_|    \_/\_/  \___/|_| \_\_|\_\ /_/   \_\____|_____|
+
+  # PublicSubnet1に付与するネットワークACL
+  # サブネット単位でネットワーク制御をしたい場合はこちらを編集してください。
+  PublicNetworkAcl1:
+    Type: "AWS::EC2::NetworkAcl"
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: ci-az1-public-subnet-network-acl
+  InboundHTTPPublicNetworkAcl1Entry:
+    Type: "AWS::EC2::NetworkAclEntry"
+    Properties:
+      NetworkAclId: !Ref PublicNetworkAcl1
+      RuleNumber: "100"
+      Protocol: "-1"
+      RuleAction: "allow"
+      Egress: "false"
+      CidrBlock: "0.0.0.0/0"
+      PortRange:
+        From: "0"
+        To: "65535"
+  OutboundPublicNetworkAcl1Entry:
+    Type: "AWS::EC2::NetworkAclEntry"
+    Properties:
+      NetworkAclId: !Ref PublicNetworkAcl1
+      RuleNumber: "100"
+      Protocol: "-1"
+      RuleAction: "allow"
+      Egress: "true"
+      CidrBlock: "0.0.0.0/0"
+      PortRange:
+        From: "0"
+        To: "65535"
+  PublicSubnet1NetworkAclAssociation:
+    Type: "AWS::EC2::SubnetNetworkAclAssociation"
+    Properties:
+      SubnetId: !Ref PublicSubnet1
+      NetworkAclId: !Ref PublicNetworkAcl1
+
+  #  _   _    _  _____    ____    _  _____ _______        ___ __   __
+  # | \ | |  / \|_   _|  / ___|  / \|_   _| ____\ \      / / \\ \ / /
+  # |  \| | / _ \ | |   | |  _  / _ \ | | |  _|  \ \ /\ / / _ \\ V /
+  # | |\  |/ ___ \| |   | |_| |/ ___ \| | | |___  \ V  V / ___ \| |
+  # |_| \_/_/   \_\_|    \____/_/   \_\_| |_____|  \_/\_/_/   \_\_|
+
+  NatGateway1EIP:
+    Type: AWS::EC2::EIP
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      Domain: vpc
+
+  NatGateway1:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NatGateway1EIP.AllocationId
+      SubnetId: !Ref PublicSubnet1
+      Tags:
+        - Key: Name
+          Value: ci-az1-natgw
+        - Key: Environment
+          Value: ci
+
+  #  ____   ___  _   _ _____ _____   _____  _    ____  _     _____
+  # |  _ \ / _ \| | | |_   _| ____| |_   _|/ \  | __ )| |   | ____|
+  # | |_) | | | | | | | | | |  _|     | | / _ \ |  _ \| |   |  _|
+  # |  _ <| |_| | |_| | | | | |___    | |/ ___ \| |_) | |___| |___
+  # |_| \_\\___/ \___/  |_| |_____|   |_/_/   \_\____/|_____|_____|
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: ci-public-route-table
+
+  DefaultPublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      SubnetId: !Ref PublicSubnet1
+
+  PrivateRouteTable1:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: ci-az1-private-route-table
+
+  DefaultPrivateRoute1:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable1
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway1
+
+  PrivateSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable1
+      SubnetId: !Ref PrivateSubnet1
+
+
+  #  ____  _____ ____ _   _ ____  ___ _______   __   ____ ____   ___  _   _ ____
+  # / ___|| ____/ ___| | | |  _ \|_ _|_   _\ \ / /  / ___|  _ \ / _ \| | | |  _ \
+  # \___ \|  _|| |   | | | | |_) || |  | |  \ V /  | |  _| |_) | | | | | | | |_) |
+  #  ___) | |__| |___| |_| |  _ < | |  | |   | |   | |_| |  _ <| |_| | |_| |  __/
+  # |____/|_____\____|\___/|_| \_\___| |_|   |_|    \____|_| \_\\___/ \___/|_|
+
+  PublicSecurityGroup:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupDescription: ci-public-security-group
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: "TCP"
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 127.0.0.1/32
+          Description: "localhost"
+      Tags:
+        - Key: Name
+          Value: ci-public-security-group
+
+  PrivateSecurityGroup:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupDescription: ci-private-security-group
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: -1
+          FromPort: -1
+          ToPort: -1
+          SourceSecurityGroupId: !Ref PublicSecurityGroup
+          Description: "PublicSecurityGroupToPrivateSecurityGroup"
+      Tags:
+        - Key: Name
+          Value: ci-private-security-group
+  PrivateSecurityGroupIngress:
+    DependsOn: PrivateSecurityGroup
+    Type: 'AWS::EC2::SecurityGroupIngress'
+    Properties:
+      # Private間はすべての通信を許可
+      GroupId: !Ref PrivateSecurityGroup
+      IpProtocol: -1
+      FromPort: -1
+      ToPort: -1
+      SourceSecurityGroupId: !Ref PrivateSecurityGroup
+
+  # _____ ____ ____
+  # | ____/ ___|___ \
+  # |  _|| |     __) |
+  # | |__| |___ / __/
+  # |_____\____|_____|
+
+  SSMRoleInstanceProfile:
+    Type: 'AWS::IAM::InstanceProfile'
+    Properties:
+      InstanceProfileName: "ci-ssm-instace-profile"
+      Path: "/"
+      Roles:
+        - !Ref SSMRole
+  SSMRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: "ci-ssm-role"
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: "Allow"
+            Principal:
+              Service:
+                - "ec2.amazonaws.com"
+            Action:
+              - "sts:AssumeRole"
+      Path: "/"
+  SSMPolicy:
+    Type: 'AWS::IAM::ManagedPolicy'
+    Properties:
+      Path: "/"
+      Roles:
+        - !Ref SSMRole
+      Description: "ssm-policy"
+      ManagedPolicyName: "ci-ssm-policy"
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action:
+              - ssm:DescribeAssociation
+              - ssm:GetDeployablePatchSnapshotForInstance
+              - ssm:GetDocument
+              - ssm:GetManifest
+              - ssm:GetParameters
+              - ssm:ListAssociations
+              - ssm:ListInstanceAssociations
+              - ssm:PutInventory
+              - ssm:PutComplianceItems
+              - ssm:PutConfigurePackageResult
+              - ssm:UpdateAssociationStatus
+              - ssm:UpdateInstanceAssociationStatus
+              - ssm:UpdateInstanceInformation
+            Resource: "*"
+          - Effect: Allow
+            Action:
+              - ssmmessages:CreateControlChannel
+              - ssmmessages:CreateDataChannel
+              - ssmmessages:OpenControlChannel
+              - ssmmessages:OpenDataChannel
+            Resource: "*"
+          - Effect: Allow
+            Action:
+              - ec2messages:AcknowledgeMessage
+              - ec2messages:DeleteMessage
+              - ec2messages:FailMessage
+              - ec2messages:GetEndpoint
+              - ec2messages:GetMessages
+              - ec2messages:SendReply
+            Resource: "*"
+          - Effect: Allow
+            Action:
+              - cloudwatch:PutMetricData
+            Resource: "*"
+          - Effect: Allow
+            Action:
+              - ec2:DescribeInstanceStatus
+            Resource: "*"
+          - Effect: Allow
+            Action:
+              - ds:CreateComputer
+              - ds:DescribeDirectories
+            Resource: "*"
+          - Effect: Allow
+            Action:
+              - logs:CreateLogGroup
+              - logs:CreateLogStream
+              - logs:DescribeLogGroups
+              - logs:DescribeLogStreams
+              - logs:PutLogEvents
+            Resource: "*"
+          - Effect: Allow
+            Action:
+              - s3:GetBucketLocation
+              - s3:PutObject
+              - s3:GetObject
+              - s3:GetEncryptionConfiguration
+              - s3:AbortMultipartUpload
+              - s3:ListMultipartUploadParts
+              - s3:ListBucket
+              - s3:ListBucketMultipartUploads
+            Resource: "*"
+
+  EC2ForJenkins:
+    Type: AWS::EC2::Instance
+    Properties:
+      IamInstanceProfile: !Ref SSMRoleInstanceProfile
+      # Amazon Linux 2 AMI (HVM), SSD Volume Type
+      ImageId: ami-0922553b7b0369273
+      InstanceType: t2.micro
+      NetworkInterfaces:
+          # ネットワークインターフェイスがパブリック IP アドレスを受信するかどうかを示します
+        - AssociatePublicIpAddress: 'false'
+          # アタッチの順番におけるネットワークインターフェイスの位置
+          DeviceIndex: '0'
+          # このネットワークインターフェイスに関連付けられているセキュリティグループ ID のリスト
+          GroupSet:
+            - !Ref PrivateSecurityGroup
+          # ネットワークインターフェイスに関連付けるサブネットの ID
+          SubnetId: !Ref PrivateSubnet1
+      UserData:
+        "Fn::Base64":
+          !Sub |
+            #!/bin/bash
+            cd /tmp
+            sudo yum install -y https://s3.amazonaws.com/ec2-downloads-windows/SSMAgent/latest/linux_amd64/amazon-ssm-agent.rpm
+            sudo systemctl start amazon-ssm-agent
+
+
+Outputs:
+  PublicSubnet1:
+    Description: public subnet
+    Value: !Ref PublicSubnet1
+
+  PublicSecurityGroup:
+    Description: public security group
+    Value: !Ref PublicSecurityGroup
+
+  SSMRoleInstanceProfile:
+    Description: ssm instance profile
+    Value: !GetAtt SSMRoleInstanceProfile.Arn
