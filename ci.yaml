@@ -339,6 +339,13 @@ Resources:
           ToPort: 8080
           CidrIp: 126.224.73.119/32
           Description: "myip"
+        # See https://api.github.com/meta
+        - IpProtocol: "TCP"
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 192.30.252.0/22
+          Description: "myip"
+
       Tags:
         - Key: Name
           Value: ci-public-security-group
@@ -505,14 +512,45 @@ Resources:
             cd /tmp
             yum -y update
             # Install amazon-ssm-agent
-            sudo yum install -y https://s3.amazonaws.com/ec2-downloads-windows/SSMAgent/latest/linux_amd64/amazon-ssm-agent.rpm
-            sudo systemctl start amazon-ssm-agent
+            yum install -y https://s3.amazonaws.com/ec2-downloads-windows/SSMAgent/latest/linux_amd64/amazon-ssm-agent.rpm
+            systemctl start amazon-ssm-agent
             # Install Jenkins
-            sudo yum install -y java-1.8.0-openjdk-devel
-            sudo alternatives --config java
-            sudo wget -O /etc/yum.repos.d/jenkins.repo http://pkg.jenkins-ci.org/redhat/jenkins.repo
-            sudo rpm --import https://jenkins-ci.org/redhat/jenkins-ci.org.key
-            sudo yum -y install jenkins
-            sudo service jenkins start
+            yum install -y java-1.8.0-openjdk-devel
+            alternatives --config java
+            wget -O /etc/yum.repos.d/jenkins.repo http://pkg.jenkins-ci.org/redhat/jenkins.repo
+            rpm --import https://jenkins-ci.org/redhat/jenkins-ci.org.key
+            yum -y install jenkins
+            service jenkins start
             # EC2がブートするたびにJenkinsが起動するように
-            sudo chkconfig jenkins on
+            chkconfig jenkins on
+
+            # EFS Mount
+            /opt/aws/bin/cfn-init --stack ${AWS::StackName} --resource EC2ForJenkins --region ${AWS::Region}
+            mount -t nfs4 -o nfsvers=4.1 $(curl -s http://169.254.169.254/latest/meta-data/placement/availability-zone).${EFSFileSystem}.efs.us-east-1.amazonaws.com:/ /var/lib/jenkins
+
+  EFSFileSystem:
+    Type: AWS::EFS::FileSystem
+    Properties:
+      FileSystemTags:
+      - Key: Name
+        Value: ci-jenkins-efs
+  EFSMoutTarget:
+    Type: AWS::EFS::MountTarget
+    Properties:
+      FileSystemId: !Ref EFSFileSystem
+      SecurityGroups:
+      - !Ref SecurityGroupFileSystem
+      SubnetId: !Ref PrivateSubnet1
+  SecurityGroupFileSystem:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: SecurityGroup for EFS
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: '2049'
+        ToPort: '2049'
+        CidrIp: 0.0.0.0/0
+      Tags:
+      - Key: Application
+        Value: !Ref AWS::StackName
+      VpcId: !Ref VPC
