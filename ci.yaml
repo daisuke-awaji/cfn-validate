@@ -67,51 +67,6 @@ Resources:
       Roles:
         - !Ref VPCFlowLogsRole
 
-  # NATGateway経由でインターネットに抜ければいいのでべつにPrivateLinkしなくても良くないかな？
-
-  # VPCEndpointSSM:
-  #   Type: AWS::EC2::VPCEndpoint
-  #   Properties:
-  #     VpcId: !Ref VPC
-  #     # Systems Manager サービスのエンドポイント。
-  #     ServiceName: !Sub com.amazonaws.${AWS::Region}.ssm
-  #     VpcEndpointType: Interface
-  #     PrivateDnsEnabled: false
-  #     SubnetIds:
-  #       - !Ref PublicSubnet1
-  #
-  # VPCEndpointSSMMessages:
-  #   Type: AWS::EC2::VPCEndpoint
-  #   Properties:
-  #     VpcId: !Ref VPC
-  #     # This endpoint is required only if you are connecting to your instances through a secure data channel using Session Manager. For more information, see AWS Systems Manager Session Manager.
-  #     ServiceName: !Sub com.amazonaws.${AWS::Region}.ssmmessages
-  #     VpcEndpointType: Interface
-  #     PrivateDnsEnabled: false
-  #     SubnetIds:
-  #       - !Ref PublicSubnet1
-  #
-  # VPCEndpointEC2Messages:
-  #   Type: AWS::EC2::VPCEndpoint
-  #   Properties:
-  #     VpcId: !Ref VPC
-  #     # このエンドポイントを通じて、Systems Manager は SSM エージェントから Systems Manager サービスへの呼び出しを行います
-  #     ServiceName: !Sub com.amazonaws.${AWS::Region}.ec2messages
-  #     VpcEndpointType: Interface
-  #     PrivateDnsEnabled: false
-  #     SubnetIds:
-  #       - !Ref PublicSubnet1
-  #
-  # VPCEndpointS3:
-  #   Type: AWS::EC2::VPCEndpoint
-  #   Properties:
-  #     VpcId: !Ref VPC
-  #     # Systems Manager は Amazon S3 出力ログをアップロードし、SSM エージェントを更新します。
-  #     ServiceName: !Sub com.amazonaws.${AWS::Region}.s3
-  #     # Subnet IDs are only supported for Interface type VPC Endpoint
-  #     VpcEndpointType: Gateway
-  #     PrivateDnsEnabled: false
-
   #  ___ _   _ _____ _____ ____  _   _ _____ _____
   # |_ _| \ | |_   _| ____|  _ \| \ | | ____|_   _|
   #  | ||  \| | | | |  _| | |_) |  \| |  _|   | |
@@ -337,15 +292,8 @@ Resources:
         - IpProtocol: "TCP"
           FromPort: 8080
           ToPort: 8080
-          CidrIp: 126.224.73.119/32
+          CidrIp: 0.0.0.0/0
           Description: "myip"
-        # See https://api.github.com/meta
-        - IpProtocol: "TCP"
-          FromPort: 443
-          ToPort: 443
-          CidrIp: 192.30.252.0/22
-          Description: "myip"
-
       Tags:
         - Key: Name
           Value: ci-public-security-group
@@ -486,17 +434,7 @@ Resources:
       ImageId: ami-0922553b7b0369273
       InstanceType: t2.micro
       NetworkInterfaces:
-        # ALBとか挟むならプライベートサブネットに置いてもいいけどどうかな？
-        #   # ネットワークインターフェイスがパブリック IP アドレスを受信するかどうかを示します
-        # - AssociatePublicIpAddress: 'false'
-        #   # アタッチの順番におけるネットワークインターフェイスの位置
-        #   DeviceIndex: '0'
-        #   # このネットワークインターフェイスに関連付けられているセキュリティグループ ID のリスト
-        #   GroupSet:
-        #     - !Ref PrivateSecurityGroup
-        #   # ネットワークインターフェイスに関連付けるサブネットの ID
-        #   SubnetId: !Ref PrivateSubnet1
-        #   # ネットワークインターフェイスがパブリック IP アドレスを受信するかどうかを示します
+          # ネットワークインターフェイスがパブリック IP アドレスを受信するかどうかを示します
         - AssociatePublicIpAddress: 'true'
           # アタッチの順番におけるネットワークインターフェイスの位置
           DeviceIndex: '0'
@@ -514,19 +452,33 @@ Resources:
             # Install amazon-ssm-agent
             yum install -y https://s3.amazonaws.com/ec2-downloads-windows/SSMAgent/latest/linux_amd64/amazon-ssm-agent.rpm
             systemctl start amazon-ssm-agent
-            # Install Jenkins
+            # Install Java
             yum install -y java-1.8.0-openjdk-devel
             alternatives --config java
+            # Install Jenkins
             wget -O /etc/yum.repos.d/jenkins.repo http://pkg.jenkins-ci.org/redhat/jenkins.repo
             rpm --import https://jenkins-ci.org/redhat/jenkins-ci.org.key
             yum -y install jenkins
-            service jenkins start
             # EC2がブートするたびにJenkinsが起動するように
             chkconfig jenkins on
-
             # EFS Mount
             /opt/aws/bin/cfn-init --stack ${AWS::StackName} --resource EC2ForJenkins --region ${AWS::Region}
-            mount -t nfs4 -o nfsvers=4.1 $(curl -s http://169.254.169.254/latest/meta-data/placement/availability-zone).${EFSFileSystem}.efs.us-east-1.amazonaws.com:/ /var/lib/jenkins
+            mount -t nfs4 -o nfsvers=4.1 $(curl -s http://169.254.169.254/latest/meta-data/placement/availability-zone).${EFSFileSystem}.efs.${AWS::Region}.amazonaws.com:/ /var/lib/jenkins
+            chown jenkins:jenkins /var/lib/jenkins
+            service jenkins start
+
+  #  _____ _           _   _
+  # | ____| | __ _ ___| |_(_) ___
+  # |  _| | |/ _` / __| __| |/ __|
+  # | |___| | (_| \__ \ |_| | (__
+  # |_____|_|\__,_|___/\__|_|\___|
+  #
+  #  _____ _ _        ____            _
+  # |  ___(_) | ___  / ___| _   _ ___| |_ ___ _ __ ___  ___
+  # | |_  | | |/ _ \ \___ \| | | / __| __/ _ \ '_ ` _ \/ __|
+  # |  _| | | |  __/  ___) | |_| \__ \ ||  __/ | | | | \__ \
+  # |_|   |_|_|\___| |____/ \__, |___/\__\___|_| |_| |_|___/
+  #                         |___/
 
   EFSFileSystem:
     Type: AWS::EFS::FileSystem
